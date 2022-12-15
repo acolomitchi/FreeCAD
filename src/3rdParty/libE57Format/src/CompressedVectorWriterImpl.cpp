@@ -457,7 +457,7 @@ namespace e57
 
 #ifdef E57_DEBUG
       /// Double check sum of count is <= packetMaxPayloadBytes
-      const size_t totalByteCount = std::accumulate( count.begin(), count.end(), 0 );
+      const size_t totalByteCount = std::accumulate( count.begin(), count.end(), size_t(0) );
 
       if ( totalByteCount > packetMaxPayloadBytes )
       {
