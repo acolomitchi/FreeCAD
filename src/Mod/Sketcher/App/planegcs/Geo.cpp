@@ -248,7 +248,7 @@ DeriVector2 Ellipse::CalculateNormal(const Point &p, const double* derivparam) c
 
     //calculation.
     //focus2:
-    DeriVector2 f2v = cv.linCombi(2.0, f1v, -1.0); // 2*cv - f1v
+    DeriVector2 f2v = DeriVector2::lerp(f1v, cv, 2); //cv.linCombi(2.0, f1v, -1.0);// 2*cv - f1v
 
     //pf1, pf2 = vectors from p to focus1,focus2
     DeriVector2 pf1 = f1v.subtr(pv);
@@ -406,7 +406,7 @@ DeriVector2 Hyperbola::CalculateNormal(const Point &p, const double* derivparam)
 
     //calculation.
     //focus2:
-    DeriVector2 f2v = cv.linCombi(2.0, f1v, -1.0); // 2*cv - f1v
+    DeriVector2 f2v = DeriVector2::lerp(f1v, c, 2); // cv.linCombi(2.0, f1v, -1.0);// 2*cv - f1v
 
     //pf1, pf2 = vectors from p to focus1,focus2
     DeriVector2 pf1 = f1v.subtr(pv).mult(-1.0);  // <--- differs from ellipse normal calculation code by inverting this vector

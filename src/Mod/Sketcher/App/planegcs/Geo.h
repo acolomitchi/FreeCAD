@@ -59,7 +59,7 @@ namespace GCS
         double x, dx;
         double y, dy;
 
-        double length() const {return sqrt(x*x + y*y);}
+        double length() const {return std::hypot(x, y);}
         double length(double &dlength) const; //returns length and writes length deriv into the dlength argument.
 
 
@@ -79,10 +79,29 @@ namespace GCS
         DeriVector2 divD(double val, double dval) const;//divide vector by a variable with a derivative
         DeriVector2 rotate90ccw() const {return DeriVector2(-y,x,-dy,dx);}
         DeriVector2 rotate90cw() const {return DeriVector2(y,-x,dy,-dx);}
-        DeriVector2 linCombi(double m1, const DeriVector2 &v2, double m2) const {//linear combination of two vectors
-            return DeriVector2(x*m1 + v2.x*m2, y*m1 + v2.y*m2,
-                               dx*m1 + v2.dx*m2, dy*m1 + v2.dy*m2);}
 
+        // use lerp, one less mulpiplication per dimension
+        //DeriVector2 linCombi(double m1, const DeriVector2 &v2, double m2) const {//linear combination of two vectors
+        //    return DeriVector2(x*m1 + v2.x*m2, y*m1 + v2.y*m2,
+        //                       dx*m1 + v2.dx*m2, dy*m1 + v2.dy*m2);}
+
+#if __cplusplus < 202002L
+        // see https://en.cppreference.com/w/cpp/numeric/lerp already present in c++20
+        static double lerp(double s, double e, double t)
+        {
+            if (t == 0.0)
+                return s;
+            if (t == 1.0)
+                return e;
+            return std::fma(e - s, t, s); // see https://en.cppreference.com/w/cpp/numeric/math/fma
+        }
+#endif
+        static DeriVector2 lerp(const DeriVector2& s, const DeriVector2& e, double t) {
+            using namespace std;
+            return DeriVector2(
+                lerp(s.x, e.x, t), lerp(s.y, e.y, t), 
+                lerp(s.dx, e.dx, t), lerp(s.dy, e.dy, t));
+        }
     };
 
     ///////////////////////////////////////

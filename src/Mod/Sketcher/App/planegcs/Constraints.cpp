@@ -41,7 +41,7 @@ Constraint::Constraint()
 {
 }
 
-void Constraint::redirectParams(MAP_pD_pD redirectionmap)
+void Constraint::redirectParams(const MAP_pD_pD& redirectionmap)
 {
     int i=0;
     for (VEC_pD::iterator param=origpvec.begin();
@@ -1188,7 +1188,7 @@ void ConstraintEllipseTangentLine::errorgrad(double *err, double *grad, double *
     DeriVector2 p2 (l.p2, param);
     DeriVector2 f1 (e.focus1, param);
     DeriVector2 c (e.center, param);
-    DeriVector2 f2 = c.linCombi(2.0, f1, -1.0); // 2*cv - f1v
+    DeriVector2 f2 = DeriVector2::lerp(f1, c, 2); //c.linCombi(2.0, f1, -1.0);// 2*cv - f1v
 
     //mirror F1 against the line
     DeriVector2 nl = l.CalculateNormal(l.p1, param).getNormalized();
@@ -1324,7 +1324,7 @@ void ConstraintInternalAlignmentPoint2Ellipse::errorgrad(double *err, double *gr
         break;
         case EllipseFocus2X:
         case EllipseFocus2Y:
-            poa = c.linCombi(2.0, f1, -1.0);
+            poa = DeriVector2::lerp(f1, c, 2); // c.linCombi(2.0, f1, -1.0);
             by_y_not_by_x = AlignmentType == EllipseFocus2Y;
         break;
         default:
