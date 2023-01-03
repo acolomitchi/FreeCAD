@@ -139,7 +139,11 @@ namespace GCS
         // on the parameter (it may not actually depend on it, e.g. angle-via-point doesn't depend
         // on ellipse's b (radmin), but b will be included within the constraint anyway.
         // Returns -1 if not found.
-        int findParamInPvec(double* param);
+        int findParamInPvec(double* param)
+        {
+            auto foundPos = std::find(pvec.begin(), pvec.end(), param);
+            return (foundPos != pvec.end()) ? foundPos - pvec.begin() : -1;
+        }
     };
 
     // Equal
@@ -246,12 +250,13 @@ namespace GCS
     class ConstraintP2PAngle : public Constraint
     {
     private:
-        inline double* p1x() { return pvec[0]; }
-        inline double* p1y() { return pvec[1]; }
-        inline double* p2x() { return pvec[2]; }
-        inline double* p2y() { return pvec[3]; }
-        inline double* angle() { return pvec[4]; }
+        inline double* p1x() const { return pvec[0]; }
+        inline double* p1y() const { return pvec[1]; }
+        inline double* p2x() const { return pvec[2]; }
+        inline double* p2y() const { return pvec[3]; }
+        inline double* angle() const { return pvec[4]; }
         double da;
+        void errorgrad(double* err, double* grad, double* param) const;
     public:
         ConstraintP2PAngle(Point &p1, Point &p2, double *a, double da_=0.);
         #ifdef _GCS_EXTRACT_SOLVER_SUBSYSTEM_
@@ -275,6 +280,7 @@ namespace GCS
         inline double* p2x() { return pvec[4]; }
         inline double* p2y() { return pvec[5]; }
         inline double* distance() { return pvec[6]; }
+        void errorgrad(double* err, double* grad, double* param);
     public:
         ConstraintP2LDistance(Point &p, Line &l, double *d);
         #ifdef _GCS_EXTRACT_SOLVER_SUBSYSTEM_
@@ -298,6 +304,7 @@ namespace GCS
         inline double* p1y() { return pvec[3]; }
         inline double* p2x() { return pvec[4]; }
         inline double* p2y() { return pvec[5]; }
+        void errorgrad(double* err, double* grad, double* param);
     public:
         ConstraintPointOnLine(Point &p, Line &l);
         ConstraintPointOnLine(Point &p, Point &lp1, Point &lp2);
@@ -346,6 +353,7 @@ namespace GCS
         inline double* l2p1y() { return pvec[5]; }
         inline double* l2p2x() { return pvec[6]; }
         inline double* l2p2y() { return pvec[7]; }
+        void errorgrad(double* err, double* grad, double* param);
     public:
         ConstraintParallel(Line &l1, Line &l2);
         #ifdef _GCS_EXTRACT_SOLVER_SUBSYSTEM_
@@ -369,6 +377,7 @@ namespace GCS
         inline double* l2p1y() { return pvec[5]; }
         inline double* l2p2x() { return pvec[6]; }
         inline double* l2p2y() { return pvec[7]; }
+        void errorgrad(double* err, double* grad, double* param);
     public:
         ConstraintPerpendicular(Line &l1, Line &l2);
         ConstraintPerpendicular(Point &l1p1, Point &l1p2, Point &l2p1, Point &l2p2);
@@ -385,15 +394,16 @@ namespace GCS
     class ConstraintL2LAngle : public Constraint
     {
     private:
-        inline double* l1p1x() { return pvec[0]; }
-        inline double* l1p1y() { return pvec[1]; }
-        inline double* l1p2x() { return pvec[2]; }
-        inline double* l1p2y() { return pvec[3]; }
-        inline double* l2p1x() { return pvec[4]; }
-        inline double* l2p1y() { return pvec[5]; }
-        inline double* l2p2x() { return pvec[6]; }
-        inline double* l2p2y() { return pvec[7]; }
-        inline double* angle() { return pvec[8]; }
+        inline double* l1p1x() const { return pvec[0]; }
+        inline double* l1p1y() const { return pvec[1]; }
+        inline double* l1p2x() const { return pvec[2]; }
+        inline double* l1p2y() const { return pvec[3]; }
+        inline double* l2p1x() const { return pvec[4]; }
+        inline double* l2p1y() const { return pvec[5]; }
+        inline double* l2p2x() const { return pvec[6]; }
+        inline double* l2p2y() const { return pvec[7]; }
+        inline double* angle() const { return pvec[8]; }
+        void errorgrad(double* err, double* grad, double* param) const;
     public:
         ConstraintL2LAngle(Line &l1, Line &l2, double *a);
         ConstraintL2LAngle(Point &l1p1, Point &l1p2,
@@ -420,6 +430,8 @@ namespace GCS
         inline double* l2p1y() { return pvec[5]; }
         inline double* l2p2x() { return pvec[6]; }
         inline double* l2p2y() { return pvec[7]; }
+
+        void errorgrad(double* err, double* grad, double* param);
     public:
         ConstraintMidpointOnLine(Line &l1, Line &l2);
         ConstraintMidpointOnLine(Point &l1p1, Point &l1p2, Point &l2p1, Point &l2p2);
@@ -466,6 +478,7 @@ namespace GCS
         inline double* f1x() { return pvec[4]; }
         inline double* f1y() { return pvec[5]; }
         inline double* rmin() { return pvec[6]; }
+        void errorgrad(double* err, double* grad, double* param);
     public:
         ConstraintPointOnEllipse(Point &p, Ellipse &e);
         ConstraintPointOnEllipse(Point &p, ArcOfEllipse &a);
@@ -628,7 +641,7 @@ namespace GCS
     class ConstraintAngleViaPoint : public Constraint
     {
     private:
-        inline double* angle() { return pvec[0]; };
+        inline double* angle() const { return pvec[0]; };
         Curve* crv1;
         Curve* crv2;
         //These two pointers hold copies of the curves that were passed on
@@ -641,6 +654,7 @@ namespace GCS
         // (test pvecChangedFlag variable before use!)
         Point poa;//poa=point of angle //needs to be reconstructed if pvec was redirected/reverted. The point is easily shallow-copied by C++, so no pointer type here and no delete is necessary.
         void ReconstructGeomPointers(); //writes pointers in pvec to the parameters of crv1, crv2 and poa
+        void errorgrad(double* err, double* grad, double* param);
     public:
         ConstraintAngleViaPoint(Curve &acrv1, Curve &acrv2, Point p, double* angle);
         ~ConstraintAngleViaPoint() override;

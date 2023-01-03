@@ -26,13 +26,30 @@
 #include <cmath>
 #include "Util.h"
 
+#if __cplusplus < 202002L
+// see https://en.cppreference.com/w/cpp/numeric/lerp already present in c++20
+namespace std
+{
+inline double lerp(double s, double e, double t)
+{
+    if (t == 0.0)
+        return s;
+    if (t == 1.0)
+        return e;
+    return std::fma(e - s, t, s);// see https://en.cppreference.com/w/cpp/numeric/math/fma
+}
+}// namespace std
+#endif
+
 namespace GCS
 {
+inline int signum(double x) { return x < 0 ? -1 : (x > 0 ? 1 : 0); }
+
     class Point
     {
     public:
-        Point(){x = nullptr; y = nullptr;}
-        Point(double *px, double *py) {x=px; y=py;}
+        Point() : x(nullptr), y(nullptr) {}
+        Point(double *px, double *py) : x(px), y(py) {}
         double *x;
         double *y;
     };
@@ -59,13 +76,30 @@ namespace GCS
         double x, dx;
         double y, dy;
 
-        double length() const {return std::hypot(x, y);}
-        double length(double &dlength) const; //returns length and writes length deriv into the dlength argument.
+        double length() const { return std::hypot(x, y); }
+        double sqLength() const { return x * x + y * y; }
+        double length(double &dlength) const //returns length and writes length deriv into the dlength argument.
+        {
+            double l = length();
+            if (l == 0) {
+                dlength = 1.0;
+                return l;
+            }
+            dlength = (x * dx + y * dy) / l;
+            return l;
+        }
 
-
-        //unlike other vectors in FreeCAD, this normalization creates a new vector instead of modifying existing one.
-        DeriVector2 getNormalized() const; //returns zero vector if the original is zero.
+        // unlike other vectors in FreeCAD, this normalization creates a new vector instead of modifying existing one.
+        DeriVector2 getNormalized() const
+        {
+            double dLen;
+            double l = length(dLen);
+            return (l == 0) ? DeriVector2(0, 0, dx, dy) : divD(l, dLen);
+        }
         double scalarProd(const DeriVector2 &v2, double* dprd=nullptr) const;//calculates scalar product of two vectors and returns the result. The derivative of the result is written into argument dprd.
+        // Returns the signed modulus of the cross product (this X v2). The derivative is stored in the dprd (if not-null provided)
+        double crossProduct(const DeriVector2& v2, double* dprd = nullptr) const;
+
         DeriVector2 sum(const DeriVector2 &v2) const {//adds two vectors and returns result
             return DeriVector2(x + v2.x, y + v2.y,
                                dx + v2.dx, dy + v2.dy);}
@@ -76,31 +110,39 @@ namespace GCS
             return DeriVector2(x*val, y*val, dx*val, dy*val);}//multiplies the vector by a number. Derivatives are scaled.
         DeriVector2 multD(double val, double dval) const {//multiply vector by a variable with a derivative.
             return DeriVector2(x*val, y*val, dx*val+x*dval, dy*val+y*dval);}
-        DeriVector2 divD(double val, double dval) const;//divide vector by a variable with a derivative
+        DeriVector2 divD(double val, double dval) const; //divide vector by a variable with a derivative
         DeriVector2 rotate90ccw() const {return DeriVector2(-y,x,-dy,dx);}
         DeriVector2 rotate90cw() const {return DeriVector2(y,-x,dy,-dx);}
+
+        DeriVector2 rotateCCW_D(double angle, double dAngle)
+        {
+            double co = std::cos(angle), si = std::sin(angle);
+            double dco = -si * dAngle, dsi = co * dAngle;
+            double _x = x * co - y * si, _y = x * si + y * co;
+            double _dx = (dx * co + dco * x) - (dy * si + y * dsi);
+            double _dy = (dx * si + x * dsi) + (dy * si + y * dsi);
+            return DeriVector2(_x, _y, _dx, _dy);
+        }
+
+        DeriVector2 rotateCW_D(double angle, double dAngle)
+        {
+            double co = std::cos(angle), si = std::sin(angle);
+            double dco = -si * dAngle, dsi = co * dAngle;
+            double _x = x * co + y * si, _y = - x * si + y * co;
+            double _dx = (dx * co + dco * x) + (dy * si + y * dsi);
+            double _dy = -(dx * si + x * dsi) + (dy * si + y * dsi);
+            return DeriVector2(_x, _y, _dx, _dy);
+        }
 
         // use lerp, one less mulpiplication per dimension
         //DeriVector2 linCombi(double m1, const DeriVector2 &v2, double m2) const {//linear combination of two vectors
         //    return DeriVector2(x*m1 + v2.x*m2, y*m1 + v2.y*m2,
         //                       dx*m1 + v2.dx*m2, dy*m1 + v2.dy*m2);}
 
-#if __cplusplus < 202002L
-        // see https://en.cppreference.com/w/cpp/numeric/lerp already present in c++20
-        static double lerp(double s, double e, double t)
-        {
-            if (t == 0.0)
-                return s;
-            if (t == 1.0)
-                return e;
-            return std::fma(e - s, t, s); // see https://en.cppreference.com/w/cpp/numeric/math/fma
-        }
-#endif
         static DeriVector2 lerp(const DeriVector2& s, const DeriVector2& e, double t) {
-            using namespace std;
             return DeriVector2(
-                lerp(s.x, e.x, t), lerp(s.y, e.y, t), 
-                lerp(s.dx, e.dx, t), lerp(s.dy, e.dy, t));
+                std::lerp(s.x, e.x, t), std::lerp(s.y, e.y, t), 
+                std::lerp(s.dx, e.dx, t), std::lerp(s.dy, e.dy, t));
         }
     };
 
@@ -120,6 +162,13 @@ namespace GCS
         // compute the derivative for. The derivative is returned through dx,dy
         // fields of DeriVector2.
         virtual DeriVector2 CalculateNormal(const Point &p, const double* derivparam = nullptr) const = 0;
+
+        /**
+        * @brief getRepresentativeSize : offers hints on how large the curve is; suggestion: implement
+        *    it to use elements of the bounding box or other specific value derived from the 
+        *    sizes defining the geometry of the curve.
+        */
+        virtual double getRepresentativeSize() const = 0;
 
         /**
          * @brief Value: returns point (vector) given the value of parameter
@@ -150,6 +199,25 @@ namespace GCS
         int PushOwnParams(VEC_pD &pvec) override;
         void ReconstructOnNewPvec (VEC_pD &pvec, int &cnt) override;
         Line* Copy() override;
+
+        double getRepresentativeSize() const override { return getRepresentativeSize(p1, p2); }
+
+        static double getRepresentativeSize(double dx, double dy)
+        {
+            // taxicab/manhattan distance on extent
+            return std::abs(dx) + std::abs(dy);
+        }
+        static double getRepresentativeSize(double sx, double sy, double ex, double ey)
+        {
+            // taxicab/manhattan distance between the ends
+            return getRepresentativeSize(ex - sx, ey - sy);
+        }
+        static double getRepresentativeSize(const Point& p1, const Point& p2)
+        {
+            return getRepresentativeSize(p1.x ? *p1.x : 2, p1.y ? *p1.y : 2,
+                                          p2.x ? *p2.x : 1, p2.y ? *p2.y : 1);
+        }
+
     };
 
     class Circle: public Curve
@@ -164,22 +232,37 @@ namespace GCS
         int PushOwnParams(VEC_pD &pvec) override;
         void ReconstructOnNewPvec (VEC_pD &pvec, int &cnt) override;
         Circle* Copy() override;
+
+        virtual double getRepresentativeSize() const override { return rad ? std::abs(*rad) : 1; }
     };
 
     class Arc: public Circle
     {
     public:
-        Arc(){startAngle=nullptr;endAngle=nullptr;rad=nullptr;}
-        ~Arc() override{}
-        double *startAngle;
-        double *endAngle;
+        Arc()
+        {
+            startAngle = nullptr;
+            endAngle = nullptr;
+            rad = nullptr;
+        }
+        ~Arc() override {}
+        double* startAngle;
+        double* endAngle;
         //double *rad; //inherited
         Point start;
         Point end;
         //Point center; //inherited
-        int PushOwnParams(VEC_pD &pvec) override;
-        void ReconstructOnNewPvec (VEC_pD &pvec, int &cnt) override;
+        int PushOwnParams(VEC_pD& pvec) override;
+        void ReconstructOnNewPvec(VEC_pD& pvec, int& cnt) override;
         Arc* Copy() override;
+
+        virtual double getRepresentativeSize() const override
+        {
+            double r = rad ? std::abs(*rad) : 1;
+            double sa = startAngle ? *startAngle : 0;
+            double ea = endAngle ? *endAngle : 0;
+            return std::abs((ea - sa) * r);
+        }
     };
 
     class MajorRadiusConic: public Curve
@@ -208,6 +291,11 @@ namespace GCS
         int PushOwnParams(VEC_pD &pvec) override;
         void ReconstructOnNewPvec (VEC_pD &pvec, int &cnt) override;
         Ellipse* Copy() override;
+
+        virtual double getRepresentativeSize() const override {
+            // circle returns radius, ellipse returns avg radius
+            return (radmin ? std::abs(*radmin) : 1) + std::abs(getRadMaj())/2;
+        }
     };
 
     class ArcOfEllipse: public Ellipse
@@ -244,6 +332,10 @@ namespace GCS
         int PushOwnParams(VEC_pD &pvec) override;
         void ReconstructOnNewPvec (VEC_pD &pvec, int &cnt) override;
         Hyperbola* Copy() override;
+        virtual double getRepresentativeSize() const override
+        {
+            return (radmin ? std::abs(*radmin) : 1) + std::abs(getRadMaj())/2.0;
+        }
     };
 
     class ArcOfHyperbola: public Hyperbola
@@ -260,7 +352,7 @@ namespace GCS
         int PushOwnParams(VEC_pD &pvec) override;
         void ReconstructOnNewPvec (VEC_pD &pvec, int &cnt) override;
         ArcOfHyperbola* Copy() override;
-    };
+     };
 
     class Parabola: public Curve
     {
@@ -274,6 +366,10 @@ namespace GCS
         int PushOwnParams(VEC_pD &pvec) override;
         void ReconstructOnNewPvec (VEC_pD &pvec, int &cnt) override;
         Parabola* Copy() override;
+        virtual double getRepresentativeSize() const override
+        { // the taxicab semiperimeter of the latus rectum & directrix square (this is why the 4*)
+            return 4*Line::getRepresentativeSize(vertex, focus1);
+        }
     };
 
     class ArcOfParabola: public Parabola
@@ -324,6 +420,9 @@ namespace GCS
         /// k is the range in `flattenedknots` that contains x
         double getLinCombFactor(double x, size_t k, size_t i);
         void setupFlattenedKnots();
+
+        // Curent implementation returns the taxicab distance of the spatial extent of the poles
+        double getRepresentativeSize() const override;
     };
 
 } //namespace GCS

@@ -32,6 +32,62 @@
 namespace GCS
 {
 
+#define ANGLE_TO_SIZE 0
+#define ANGLE_TO_SIZE_RATIO 0.01
+
+bool avgLineExtentScaling(const DeriVector2& l1, const DeriVector2& l2, double& extent,
+                          double& dExtent)
+{
+    double dExtent1, dExtent2;
+    double extent1 = l1.length(dExtent1);
+    double extent2 = l2.length(dExtent2);
+    if (extent1 == 0 || extent2 == 0)
+        return false;
+    extent = (extent1 + extent2) / 2.0;
+    dExtent = (dExtent1 + dExtent2) / 2.0;
+    return true;
+}
+bool noExtentScaling(const DeriVector2& l1, const DeriVector2& l2, double& extent, double& dExtent)
+{
+    extent = 1;
+    dExtent = 0;
+    return true;
+}
+
+void angleErrorGrad(
+    const DeriVector2& l1, const DeriVector2& l2, double* angleSource,
+    std::function<bool(const DeriVector2&, const DeriVector2&, double&, double&)> lineScalingAlgo,
+    double* err, double* grad, double* param,
+    bool clockwise = true
+)
+{
+    double scale, dScale;
+    if (!lineScalingAlgo(l1, l2, scale, dScale)) {
+        // lineScalingAlgo signals at least one of the lines are improper
+        if (err)
+            *err = 0;
+        if (grad)
+            *grad = 0;
+        return;
+    }
+    // scale the two lines to equal len
+    DeriVector2 line1 = l1.getNormalized().multD(scale, dScale);
+    DeriVector2 line2 = l2.getNormalized().multD(scale, dScale);
+    // rotate line2 by *angle. At zero err, the rotated l1 and l2 should be overlapping
+    // the CW direction seems consistent with what the SketcherGUI expects
+    line2 = clockwise ? line2.rotateCW_D(*angleSource, angleSource == param ? 1 : 0)
+                      : line2.rotateCCW_D(*angleSource, angleSource == param ? 1 : 0);
+
+    DeriVector2 diff = line1.subtr(line2);
+    double dLen = 0;
+    double error = diff.length(dLen);
+    if (err)
+        *err = error;
+    if (grad)
+        *grad = dLen;
+}
+
+
 ///////////////////////////////////////
 // Constraints
 ///////////////////////////////////////
@@ -82,18 +138,6 @@ double Constraint::grad(double * /*param*/)
 double Constraint::maxStep(MAP_pD_D & /*dir*/, double lim)
 {
     return lim;
-}
-
-int Constraint::findParamInPvec(double *param)
-{
-    int ret = -1;
-    for( std::size_t i=0 ; i<pvec.size() ; i++ ){
-        if ( param == pvec[i] ) {
-            ret = static_cast<int>(i);
-            break;
-        }
-    }
-    return ret;
 }
 
 // Equal
@@ -384,42 +428,80 @@ void ConstraintP2PAngle::rescale(double coef)
     scale = coef * 1.;
 }
 
-double ConstraintP2PAngle::error()
+void ConstraintP2PAngle::errorgrad(double* err, double* grad, double* param) const
 {
-    double dx = (*p2x() - *p1x());
-    double dy = (*p2y() - *p1y());
-    double a = *angle() + da;
-    double ca = cos(a);
-    double sa = sin(a);
-    double x = dx*ca + dy*sa;
-    double y = -dx*sa + dy*ca;
-    return scale * atan2(y,x);
+    if (!err)
+        if (!grad)
+            return;
+        else if (!param) {
+            *grad = 0;
+            return;
+        }
+    DeriVector2 line1 = DeriVector2(1.0, 0);// X axis
+    DeriVector2 ls = DeriVector2(Point(p1x(), p1y()), param);
+    DeriVector2 line2 = DeriVector2(Point(p2x(), p2y()), param).subtr(ls);
+
+#if (defined(ANGLE_TO_SIZE) && ANGLE_TO_SIZE)
+    angleErrorGrad(line1, line2, angle(), avgLineExtentScaling, err, grad, param);
+#else
+    angleErrorGrad(line1, line2, angle(),noExtentScaling, err, grad, param);
+#endif
+    if (err)
+        *err *= scale;
+    if (grad)
+        *grad *= scale;
 }
 
-double ConstraintP2PAngle::grad(double *param)
-{
-    double deriv=0.;
-    if (param == p1x() || param == p1y() ||
-        param == p2x() || param == p2y()) {
-        double dx = (*p2x() - *p1x());
-        double dy = (*p2y() - *p1y());
-        double a = *angle() + da;
-        double ca = cos(a);
-        double sa = sin(a);
-        double x = dx*ca + dy*sa;
-        double y = -dx*sa + dy*ca;
-        double r2 = dx*dx+dy*dy;
-        dx = -y/r2;
-        dy = x/r2;
-        if (param == p1x()) deriv += (-ca*dx + sa*dy);
-        if (param == p1y()) deriv += (-sa*dx - ca*dy);
-        if (param == p2x()) deriv += ( ca*dx - sa*dy);
-        if (param == p2y()) deriv += ( sa*dx + ca*dy);
-    }
-    if (param == angle()) deriv += -1;
-
-    return scale * deriv;
+double ConstraintP2PAngle::error() { 
+    double error = 0;
+    errorgrad(&error, nullptr, nullptr);
+    return scale * error;
 }
+
+double ConstraintP2PAngle::grad(double* param)
+{
+    double ret = 0;
+    if (std::find(pvec.begin(), pvec.end(), param) != pvec.end())
+        errorgrad(nullptr, &ret, param);
+    return scale * ret;
+}
+
+//double ConstraintP2PAngle::error()
+//{
+//    double dx = (*p2x() - *p1x());
+//    double dy = (*p2y() - *p1y());
+//    double a = *angle() + da;
+//    double ca = cos(a);
+//    double sa = sin(a);
+//    double x = dx*ca + dy*sa;
+//    double y = -dx*sa + dy*ca;
+//    return scale * atan2(y,x);
+//}
+//
+//double ConstraintP2PAngle::grad(double *param)
+//{
+//    double deriv=0.;
+//    if (param == p1x() || param == p1y() ||
+//        param == p2x() || param == p2y()) {
+//        double dx = (*p2x() - *p1x());
+//        double dy = (*p2y() - *p1y());
+//        double a = *angle() + da;
+//        double ca = cos(a);
+//        double sa = sin(a);
+//        double x = dx*ca + dy*sa;
+//        double y = -dx*sa + dy*ca;
+//        double r2 = dx*dx+dy*dy;
+//        dx = -y/r2;
+//        dy = x/r2;
+//        if (param == p1x()) deriv += (-ca*dx + sa*dy);
+//        if (param == p1y()) deriv += (-sa*dx - ca*dy);
+//        if (param == p2x()) deriv += ( ca*dx - sa*dy);
+//        if (param == p2y()) deriv += ( sa*dx + ca*dy);
+//    }
+//    if (param == angle()) deriv += -1;
+//
+//    return scale * deriv;
+//}
 
 double ConstraintP2PAngle::maxStep(MAP_pD_D &dir, double lim)
 {
@@ -457,45 +539,36 @@ void ConstraintP2LDistance::rescale(double coef)
     scale = coef;
 }
 
+void ConstraintP2LDistance::errorgrad(double* err, double* grad, double* param) {
+    if (!err)
+        if (!grad)
+            return;
+        else if (!param) {
+            *grad = 0;
+            return;
+        }
+    DeriVector2 ls = DeriVector2(Point(p1x(), p1y()), param);
+    DeriVector2 baseLine = DeriVector2(Point(p2x(), p2y()), param).subtr(ls).getNormalized();
+    DeriVector2 toProjLine = DeriVector2(Point(p0x(), p0y()), param).subtr(ls);
+    double error = baseLine.crossProduct(toProjLine, grad);
+    if (err)
+        *err = error - *distance();
+    if (grad && param == distance())
+        *grad = -1; // otherwise if grad was require but the param is not the distance, the grad value was set at crossProd
+}
+
 double ConstraintP2LDistance::error()
 {
-    double x0=*p0x(), x1=*p1x(), x2=*p2x();
-    double y0=*p0y(), y1=*p1y(), y2=*p2y();
-    double dist = *distance();
-    double dx = x2-x1;
-    double dy = y2-y1;
-    double d = sqrt(dx*dx+dy*dy);
-    double area = std::abs(-x0*dy+y0*dx+x1*y2-x2*y1); // = x1y2 - x2y1 - x0y2 + x2y0 + x0y1 - x1y0 = 2*(triangle area)
-    return scale * (area/d - dist);
+    double err;
+    errorgrad(&err, nullptr, nullptr);
+    return scale * err;
 }
 
 double ConstraintP2LDistance::grad(double *param)
 {
-    double deriv=0.;
-    // darea/dx0 = (y1-y2)      darea/dy0 = (x2-x1)
-    // darea/dx1 = (y2-y0)      darea/dy1 = (x0-x2)
-    // darea/dx2 = (y0-y1)      darea/dy2 = (x1-x0)
-    if (param == p0x() || param == p0y() ||
-        param == p1x() || param == p1y() ||
-        param == p2x() || param == p2y()) {
-        double x0=*p0x(), x1=*p1x(), x2=*p2x();
-        double y0=*p0y(), y1=*p1y(), y2=*p2y();
-        double dx = x2-x1;
-        double dy = y2-y1;
-        double d2 = dx*dx+dy*dy;
-        double d = sqrt(d2);
-        double area = -x0*dy+y0*dx+x1*y2-x2*y1;
-        if (param == p0x()) deriv += (y1-y2) / d;
-        if (param == p0y()) deriv += (x2-x1) / d ;
-        if (param == p1x()) deriv += ((y2-y0)*d + (dx/d)*area) / d2;
-        if (param == p1y()) deriv += ((x0-x2)*d + (dy/d)*area) / d2;
-        if (param == p2x()) deriv += ((y0-y1)*d - (dx/d)*area) / d2;
-        if (param == p2y()) deriv += ((x1-x0)*d - (dy/d)*area) / d2;
-        if (area < 0)
-            deriv *= -1;
-    }
-    if (param == distance()) deriv += -1;
-
+    double deriv = 0;
+    if (std::find(pvec.begin(), pvec.end(), param) != pvec.end())
+        errorgrad(nullptr, &deriv, param);
     return scale * deriv;
 }
 
@@ -529,7 +602,7 @@ double ConstraintP2LDistance::maxStep(MAP_pD_D &dir, double lim)
     if (darea > 0.) {
         double dx = x2-x1;
         double dy = y2-y1;
-        double area = 0.3*(*distance())*sqrt(dx*dx+dy*dy);
+        double area = 0.3*(*distance())*std::hypot(dx, dy);
         if (darea > area) {
             area = std::max(area, 0.3*std::abs(-x0*dy+y0*dx+x1*y2-x2*y1));
             if (darea > area)
@@ -574,40 +647,38 @@ void ConstraintPointOnLine::rescale(double coef)
     scale = coef;
 }
 
+void ConstraintPointOnLine::errorgrad(double* err, double* grad, double* param)
+{
+    if (!err)
+        if (!grad)
+            return;
+        else if (!param) {
+            *grad = 0;
+            return;
+        }
+    DeriVector2 s = DeriVector2(Point(p1x(), p1y()), param);
+    DeriVector2 e = DeriVector2(Point(p2x(), p2y()), param);
+    DeriVector2 lineDir = e.subtr(s).getNormalized();
+
+    DeriVector2 pos = DeriVector2(Point(p0x(), p0y()), param).subtr(s);
+    double error = lineDir.crossProduct(pos, grad);
+    if (err)
+        *err = error;
+    // grad, if provided, is already filled in by the crossproduct
+}
+
 double ConstraintPointOnLine::error()
 {
-    double x0=*p0x(), x1=*p1x(), x2=*p2x();
-    double y0=*p0y(), y1=*p1y(), y2=*p2y();
-    double dx = x2-x1;
-    double dy = y2-y1;
-    double d = sqrt(dx*dx+dy*dy);
-    double area = -x0*dy+y0*dx+x1*y2-x2*y1; // = x1y2 - x2y1 - x0y2 + x2y0 + x0y1 - x1y0 = 2*(triangle area)
-    return scale * area/d;
+    double err;
+    errorgrad(&err, nullptr, nullptr);
+    return scale * err;
 }
 
 double ConstraintPointOnLine::grad(double *param)
 {
-    double deriv=0.;
-    // darea/dx0 = (y1-y2)      darea/dy0 = (x2-x1)
-    // darea/dx1 = (y2-y0)      darea/dy1 = (x0-x2)
-    // darea/dx2 = (y0-y1)      darea/dy2 = (x1-x0)
-    if (param == p0x() || param == p0y() ||
-        param == p1x() || param == p1y() ||
-        param == p2x() || param == p2y()) {
-        double x0=*p0x(), x1=*p1x(), x2=*p2x();
-        double y0=*p0y(), y1=*p1y(), y2=*p2y();
-        double dx = x2-x1;
-        double dy = y2-y1;
-        double d2 = dx*dx+dy*dy;
-        double d = sqrt(d2);
-        double area = -x0*dy+y0*dx+x1*y2-x2*y1;
-        if (param == p0x()) deriv += (y1-y2) / d;
-        if (param == p0y()) deriv += (x2-x1) / d ;
-        if (param == p1x()) deriv += ((y2-y0)*d + (dx/d)*area) / d2;
-        if (param == p1y()) deriv += ((x0-x2)*d + (dy/d)*area) / d2;
-        if (param == p2x()) deriv += ((y0-y1)*d - (dx/d)*area) / d2;
-        if (param == p2y()) deriv += ((x1-x0)*d - (dy/d)*area) / d2;
-    }
+    double deriv = 0;
+    if (std::find(pvec.begin(), pvec.end(), param) != pvec.end())
+        errorgrad(nullptr, &deriv, param);
     return scale * deriv;
 }
 
@@ -709,34 +780,63 @@ ConstraintType ConstraintParallel::getTypeId()
 
 void ConstraintParallel::rescale(double coef)
 {
-    double dx1 = (*l1p1x() - *l1p2x());
-    double dy1 = (*l1p1y() - *l1p2y());
-    double dx2 = (*l2p1x() - *l2p2x());
-    double dy2 = (*l2p1y() - *l2p2y());
-    scale = coef / sqrt((dx1*dx1+dy1*dy1)*(dx2*dx2+dy2*dy2));
+    scale = coef; // / sqrt((dx1 * dx1 + dy1 * dy1) * (dx2 * dx2 + dy2 * dy2));
+}
+
+void ConstraintParallel::errorgrad(double* err, double* grad, double* param)
+{
+    if (!err)
+        if (!grad)
+            return;
+        else if (!param) {
+            *grad = 0;
+            return;
+        }
+    DeriVector2 l1s = DeriVector2(Point(l1p1x(), l1p1y()), param);
+    DeriVector2 l1 = DeriVector2(Point(l1p2x(), l1p2y()), param).subtr(l1s);
+    DeriVector2 l2s = DeriVector2(Point(l2p1x(), l2p1y()), param);
+    DeriVector2 l2 = DeriVector2(Point(l2p2x(), l2p2y()), param).subtr(l2s);
+
+    // normalize one of them, we want the err being reported in terms of distance (not area)
+    // pick the smallest spatial extent one to normalize, this way the reported err will be less trivial
+    // using taxicab distance as a metric for extent
+    if ((std::abs(l1.x) + std::abs(l1.y)) > (std::abs(l1.x) + std::abs(l1.y)))
+        l2 = l2.getNormalized();
+    else
+        l1 = l1.getNormalized();
+    double error = l1.crossProduct(l2, grad);
+    if (err)
+        *err = error;
+    // the grad, if provided, is set by the crossProduct
 }
 
 double ConstraintParallel::error()
 {
-    double dx1 = (*l1p1x() - *l1p2x());
-    double dy1 = (*l1p1y() - *l1p2y());
-    double dx2 = (*l2p1x() - *l2p2x());
-    double dy2 = (*l2p1y() - *l2p2y());
-    return scale * (dx1*dy2 - dy1*dx2);
+    //double dx1 = (*l1p1x() - *l1p2x());
+    //double dy1 = (*l1p1y() - *l1p2y());
+    //double dx2 = (*l2p1x() - *l2p2x());
+    //double dy2 = (*l2p1y() - *l2p2y());
+    //return scale * (dx1*dy2 - dy1*dx2); // nonono... NO! don't return a normalized err when all the others constraints return a distance err
+    double err;
+    errorgrad(&err, nullptr, nullptr);
+    return scale * err;
 }
 
 double ConstraintParallel::grad(double *param)
 {
     double deriv=0.;
-    if (param == l1p1x()) deriv += (*l2p1y() - *l2p2y()); // = dy2
-    if (param == l1p2x()) deriv += -(*l2p1y() - *l2p2y()); // = -dy2
-    if (param == l1p1y()) deriv += -(*l2p1x() - *l2p2x()); // = -dx2
-    if (param == l1p2y()) deriv += (*l2p1x() - *l2p2x()); // = dx2
+    //if (param == l1p1x()) deriv += (*l2p1y() - *l2p2y()); // = dy2
+    //if (param == l1p2x()) deriv += -(*l2p1y() - *l2p2y()); // = -dy2
+    //if (param == l1p1y()) deriv += -(*l2p1x() - *l2p2x()); // = -dx2
+    //if (param == l1p2y()) deriv += (*l2p1x() - *l2p2x()); // = dx2
 
-    if (param == l2p1x()) deriv += -(*l1p1y() - *l1p2y()); // = -dy1
-    if (param == l2p2x()) deriv += (*l1p1y() - *l1p2y()); // = dy1
-    if (param == l2p1y()) deriv += (*l1p1x() - *l1p2x()); // = dx1
-    if (param == l2p2y()) deriv += -(*l1p1x() - *l1p2x()); // = -dx1
+    //if (param == l2p1x()) deriv += -(*l1p1y() - *l1p2y()); // = -dy1
+    //if (param == l2p2x()) deriv += (*l1p1y() - *l1p2y()); // = dy1
+    //if (param == l2p1y()) deriv += (*l1p1x() - *l1p2x()); // = dx1
+    //if (param == l2p2y()) deriv += -(*l1p1x() - *l1p2x()); // = -dx1
+
+    if (std::find(pvec.begin(), pvec.end(), param) != pvec.end())
+        errorgrad(nullptr, &deriv, param);
 
     return scale * deriv;
 }
@@ -778,35 +878,67 @@ ConstraintType ConstraintPerpendicular::getTypeId()
 
 void ConstraintPerpendicular::rescale(double coef)
 {
-    double dx1 = (*l1p1x() - *l1p2x());
-    double dy1 = (*l1p1y() - *l1p2y());
-    double dx2 = (*l2p1x() - *l2p2x());
-    double dy2 = (*l2p1y() - *l2p2y());
-    scale = coef / sqrt((dx1*dx1+dy1*dy1)*(dx2*dx2+dy2*dy2));
+    //double dx1 = (*l1p1x() - *l1p2x());
+    //double dy1 = (*l1p1y() - *l1p2y());
+    //double dx2 = (*l2p1x() - *l2p2x());
+    //double dy2 = (*l2p1y() - *l2p2y());
+    //scale = coef / sqrt((dx1*dx1+dy1*dy1)*(dx2*dx2+dy2*dy2));
+    scale = coef; // if modified to return a distance in the err, there's no need to juggle with the scale factor
+}
+
+void ConstraintPerpendicular::errorgrad(double* err, double* grad, double* param)
+{
+    if (!err)
+        if (!grad)
+            return;
+        else if (!param) {
+            *grad = 0;
+            return;
+        }
+    DeriVector2 l1s = DeriVector2(Point(l1p1x(), l1p1y()), param);
+    DeriVector2 l1 = DeriVector2(Point(l1p2x(), l1p2y()), param).subtr(l1s);
+    DeriVector2 l2s = DeriVector2(Point(l2p1x(), l2p1y()), param);
+    DeriVector2 l2 = DeriVector2(Point(l2p2x(), l2p2y()), param).subtr(l2s);
+
+    // normalize one of them, we want the err being reported in terms of distance (not area)
+    // pick the smallest spatial extent one, this way the reported err will be less trivial
+    // using taxicab distance as a metric for extent
+    if ((std::abs(l1.x) + std::abs(l1.y)) > (std::abs(l1.x) + std::abs(l1.y)))
+        l2 = l2.getNormalized();
+    else
+        l1 = l1.getNormalized();
+    double error = l1.scalarProd(l2, grad);
+    if (err)
+        *err = error;
 }
 
 double ConstraintPerpendicular::error()
 {
-    double dx1 = (*l1p1x() - *l1p2x());
-    double dy1 = (*l1p1y() - *l1p2y());
-    double dx2 = (*l2p1x() - *l2p2x());
-    double dy2 = (*l2p1y() - *l2p2y());
-    return scale * (dx1*dx2 + dy1*dy2);
+    //double dx1 = (*l1p1x() - *l1p2x());
+    //double dy1 = (*l1p1y() - *l1p2y());
+    //double dx2 = (*l2p1x() - *l2p2x());
+    //double dy2 = (*l2p1y() - *l2p2y());
+    //return scale * (dx1*dx2 + dy1*dy2);
+    double err;
+    errorgrad(&err, nullptr, nullptr);
+    return scale * err;
 }
 
 double ConstraintPerpendicular::grad(double *param)
 {
     double deriv=0.;
-    if (param == l1p1x()) deriv += (*l2p1x() - *l2p2x()); // = dx2
-    if (param == l1p2x()) deriv += -(*l2p1x() - *l2p2x()); // = -dx2
-    if (param == l1p1y()) deriv += (*l2p1y() - *l2p2y()); // = dy2
-    if (param == l1p2y()) deriv += -(*l2p1y() - *l2p2y()); // = -dy2
+    //if (param == l1p1x()) deriv += (*l2p1x() - *l2p2x()); // = dx2
+    //if (param == l1p2x()) deriv += -(*l2p1x() - *l2p2x()); // = -dx2
+    //if (param == l1p1y()) deriv += (*l2p1y() - *l2p2y()); // = dy2
+    //if (param == l1p2y()) deriv += -(*l2p1y() - *l2p2y()); // = -dy2
 
-    if (param == l2p1x()) deriv += (*l1p1x() - *l1p2x()); // = dx1
-    if (param == l2p2x()) deriv += -(*l1p1x() - *l1p2x()); // = -dx1
-    if (param == l2p1y()) deriv += (*l1p1y() - *l1p2y()); // = dy1
-    if (param == l2p2y()) deriv += -(*l1p1y() - *l1p2y()); // = -dy1
+    //if (param == l2p1x()) deriv += (*l1p1x() - *l1p2x()); // = dx1
+    //if (param == l2p2x()) deriv += -(*l1p1x() - *l1p2x()); // = -dx1
+    //if (param == l2p1y()) deriv += (*l1p1y() - *l1p2y()); // = dy1
+    //if (param == l2p2y()) deriv += -(*l1p1y() - *l1p2y()); // = -dy1
 
+    if (std::find(pvec.begin(), pvec.end(), param) != pvec.end())
+        errorgrad(nullptr, &deriv, param);
     return scale * deriv;
 }
 
@@ -852,56 +984,113 @@ void ConstraintL2LAngle::rescale(double coef)
     scale = coef * 1.;
 }
 
+
+
+
+void ConstraintL2LAngle::errorgrad(double* err, double* grad, double* param) const
+{
+    if (!err)
+        if (!grad)
+            return;
+        else if (!param) {
+            *grad = 0;
+            return;
+        }
+    DeriVector2 l1s = DeriVector2(Point(l1p1x(), l1p1y()), param);
+    DeriVector2 line1 = DeriVector2(Point(l1p2x(), l1p2y()), param).subtr(l1s);
+    DeriVector2 l2s = DeriVector2(Point(l2p1x(), l2p1y()), param);
+    DeriVector2 line2 = DeriVector2(Point(l2p2x(), l2p2y()), param).subtr(l2s);
+#if (defined(ANGLE_TO_SIZE) && ANGLE_TO_SIZE)
+    angleErrorGrad(line1, line2, angle(), avgLineExtentScaling, err, grad, param);
+#else
+    angleErrorGrad(line1, line2, angle(), noExtentScaling, err, grad, param);
+#endif
+    if (err)
+        *err *= scale;
+    if (grad)
+        *grad *= scale;
+}
+
 double ConstraintL2LAngle::error()
 {
-    double dx1 = (*l1p2x() - *l1p1x());
-    double dy1 = (*l1p2y() - *l1p1y());
-    double dx2 = (*l2p2x() - *l2p1x());
-    double dy2 = (*l2p2y() - *l2p1y());
-    double a = atan2(dy1,dx1) + *angle();
-    double ca = cos(a);
-    double sa = sin(a);
-    double x2 = dx2*ca + dy2*sa;
-    double y2 = -dx2*sa + dy2*ca;
-    return scale * atan2(y2,x2);
+    double ret = 0;
+    errorgrad(&ret, nullptr, nullptr);
+    return scale * ret;
 }
-
-double ConstraintL2LAngle::grad(double *param)
+double ConstraintL2LAngle::grad(double* param)
 {
-    double deriv=0.;
-    if (param == l1p1x() || param == l1p1y() ||
-        param == l1p2x() || param == l1p2y()) {
-        double dx1 = (*l1p2x() - *l1p1x());
-        double dy1 = (*l1p2y() - *l1p1y());
-        double r2 = dx1*dx1+dy1*dy1;
-        if (param == l1p1x()) deriv += -dy1/r2;
-        if (param == l1p1y()) deriv += dx1/r2;
-        if (param == l1p2x()) deriv += dy1/r2;
-        if (param == l1p2y()) deriv += -dx1/r2;
-    }
-    if (param == l2p1x() || param == l2p1y() ||
-        param == l2p2x() || param == l2p2y()) {
-        double dx1 = (*l1p2x() - *l1p1x());
-        double dy1 = (*l1p2y() - *l1p1y());
-        double dx2 = (*l2p2x() - *l2p1x());
-        double dy2 = (*l2p2y() - *l2p1y());
-        double a = atan2(dy1,dx1) + *angle();
-        double ca = cos(a);
-        double sa = sin(a);
-        double x2 = dx2*ca + dy2*sa;
-        double y2 = -dx2*sa + dy2*ca;
-        double r2 = dx2*dx2+dy2*dy2;
-        dx2 = -y2/r2;
-        dy2 = x2/r2;
-        if (param == l2p1x()) deriv += (-ca*dx2 + sa*dy2);
-        if (param == l2p1y()) deriv += (-sa*dx2 - ca*dy2);
-        if (param == l2p2x()) deriv += ( ca*dx2 - sa*dy2);
-        if (param == l2p2y()) deriv += ( sa*dx2 + ca*dy2);
-    }
-    if (param == angle()) deriv += -1;
-
+    double deriv = 0;
+    if (std::find(pvec.begin(), pvec.end(), param) != pvec.end())
+        errorgrad(nullptr, &deriv, param);
     return scale * deriv;
 }
+
+
+//double ConstraintL2LAngle::error()
+//{
+//    double dx1 = (*l1p2x() - *l1p1x());
+//    double dy1 = (*l1p2y() - *l1p1y());
+//    double dx2 = (*l2p2x() - *l2p1x());
+//    double dy2 = (*l2p2y() - *l2p1y());
+//    double a = atan2(dy1, dx1) + *angle();
+//    double ca = cos(a);
+//    double sa = sin(a);
+//    double x2 = dx2 * ca + dy2 * sa;
+//    double y2 = -dx2 * sa + dy2 * ca;
+//#if !(defined ANGLE_TO_SIZE && ANGLE_TO_SIZE)
+//    return scale * atan2(y2, x2);
+//#else
+//    double metric =
+//        std::max(Line::getRepresentativeSize(dx1, dy1), Line::getRepresentativeSize(dx2, dy2));
+//    metric *= ANGLE_TO_SIZE_RATIO;
+//    return scale * atan2(y2, x2) * metric;
+//#endif
+//}
+//
+//double ConstraintL2LAngle::grad(double *param)
+//{
+//    double deriv=0.;
+//    if (param == l1p1x() || param == l1p1y() ||
+//        param == l1p2x() || param == l1p2y()) {
+//        double dx1 = (*l1p2x() - *l1p1x());
+//        double dy1 = (*l1p2y() - *l1p1y());
+//        double r2 = dx1*dx1+dy1*dy1;
+//        if (param == l1p1x()) deriv += -dy1/r2;
+//        if (param == l1p1y()) deriv += dx1/r2;
+//        if (param == l1p2x()) deriv += dy1/r2;
+//        if (param == l1p2y()) deriv += -dx1/r2;
+//    }
+//    if (param == l2p1x() || param == l2p1y() ||
+//        param == l2p2x() || param == l2p2y()) {
+//        double dx1 = (*l1p2x() - *l1p1x());
+//        double dy1 = (*l1p2y() - *l1p1y());
+//        double dx2 = (*l2p2x() - *l2p1x());
+//        double dy2 = (*l2p2y() - *l2p1y());
+//        double a = atan2(dy1,dx1) + *angle();
+//        double ca = cos(a);
+//        double sa = sin(a);
+//        double x2 = dx2*ca + dy2*sa;
+//        double y2 = -dx2*sa + dy2*ca;
+//        double r2 = dx2*dx2+dy2*dy2;
+//        dx2 = -y2/r2;
+//        dy2 = x2/r2;
+//        if (param == l2p1x()) deriv += (-ca*dx2 + sa*dy2);
+//        if (param == l2p1y()) deriv += (-sa*dx2 - ca*dy2);
+//        if (param == l2p2x()) deriv += ( ca*dx2 - sa*dy2);
+//        if (param == l2p2y()) deriv += ( sa*dx2 + ca*dy2);
+//    }
+//    if (param == angle()) deriv += -1;
+//
+//#if !(defined ANGLE_TO_SIZE && ANGLE_TO_SIZE)
+//    return scale * deriv;
+//#else
+//    double metric = std::max(Line::getRepresentativeSize(*l1p1x(), *l1p1y(), *l1p2x(), *l1p2y()),
+//                             Line::getRepresentativeSize(*l2p1x(), *l2p1y(), *l2p2x(), *l2p2y()));
+//    metric *= ANGLE_TO_SIZE_RATIO;
+//    return scale * deriv * metric;
+//#endif
+//}
+
 
 double ConstraintL2LAngle::maxStep(MAP_pD_D &dir, double lim)
 {
@@ -954,46 +1143,41 @@ void ConstraintMidpointOnLine::rescale(double coef)
     scale = coef * 1;
 }
 
+void ConstraintMidpointOnLine::errorgrad(double* err, double* grad, double* param)
+{
+    if (!err)
+        if (!grad)
+            return;
+        else if (!param) {
+            *grad = 0;
+            return;
+        }
+    DeriVector2 l1s = DeriVector2(Point(l1p1x(), l1p1y()), param);
+    DeriVector2 l1e = DeriVector2(Point(l1p2x(), l1p2y()), param);
+    DeriVector2 mid = DeriVector2::lerp(l1s, l1e, 0.5);
+
+    DeriVector2 l2s = DeriVector2(Point(l2p1x(), l2p1y()), param);
+    DeriVector2 symmetryLine = DeriVector2(Point(l2p2x(), l2p2y()), param).subtr(l2s).getNormalized();
+    DeriVector2 strayLine = mid.subtr(l2s);
+    
+    double ret = symmetryLine.crossProduct(strayLine, grad); // since symmetryLine is normalized, the cross-product is already the distance from mid to the symmetry  line
+    if (err)
+        *err = ret;
+    // grad, if provided, was already filled in by the crossProduct
+}
+
 double ConstraintMidpointOnLine::error()
 {
-    double x0=((*l1p1x())+(*l1p2x()))/2;
-    double y0=((*l1p1y())+(*l1p2y()))/2;
-    double x1=*l2p1x(), x2=*l2p2x();
-    double y1=*l2p1y(), y2=*l2p2y();
-    double dx = x2-x1;
-    double dy = y2-y1;
-    double d = sqrt(dx*dx+dy*dy);
-    double area = -x0*dy+y0*dx+x1*y2-x2*y1; // = x1y2 - x2y1 - x0y2 + x2y0 + x0y1 - x1y0 = 2*(triangle area)
-    return scale * area/d;
+    double error;
+    errorgrad(&error, nullptr, nullptr);
+    return scale * error;
 }
 
 double ConstraintMidpointOnLine::grad(double *param)
 {
-    double deriv=0.;
-    // darea/dx0 = (y1-y2)      darea/dy0 = (x2-x1)
-    // darea/dx1 = (y2-y0)      darea/dy1 = (x0-x2)
-    // darea/dx2 = (y0-y1)      darea/dy2 = (x1-x0)
-    if (param == l1p1x() || param == l1p1y() ||
-        param == l1p2x() || param == l1p2y()||
-        param == l2p1x() || param == l2p1y() ||
-        param == l2p2x() || param == l2p2y()) {
-        double x0=((*l1p1x())+(*l1p2x()))/2;
-        double y0=((*l1p1y())+(*l1p2y()))/2;
-        double x1=*l2p1x(), x2=*l2p2x();
-        double y1=*l2p1y(), y2=*l2p2y();
-        double dx = x2-x1;
-        double dy = y2-y1;
-        double d2 = dx*dx+dy*dy;
-        double d = sqrt(d2);
-        double area = -x0*dy+y0*dx+x1*y2-x2*y1;
-        if (param == l1p1x()) deriv += (y1-y2) / (2*d);
-        if (param == l1p1y()) deriv += (x2-x1) / (2*d);
-        if (param == l1p2x()) deriv += (y1-y2) / (2*d);
-        if (param == l1p2y()) deriv += (x2-x1) / (2*d);
-        if (param == l2p1x()) deriv += ((y2-y0)*d + (dx/d)*area) / d2;
-        if (param == l2p1y()) deriv += ((x0-x2)*d + (dy/d)*area) / d2;
-        if (param == l2p2x()) deriv += ((y0-y1)*d - (dx/d)*area) / d2;
-        if (param == l2p2y()) deriv += ((x1-x0)*d - (dy/d)*area) / d2;
+    double deriv = 0;
+    if (std::find(pvec.begin(), pvec.end(), param) != pvec.end()) {
+        errorgrad(nullptr, &deriv, param);
     }
     return scale * deriv;
 }
@@ -1028,9 +1212,9 @@ double ConstraintTangentCircumf::error()
     double dx = (*c1x() - *c2x());
     double dy = (*c1y() - *c2y());
     if (internal)
-        return scale * (sqrt(dx*dx + dy*dy) - std::abs(*r1() - *r2()));
+        return scale * (std::hypot(dx, dy) - std::abs(*r1() - *r2()));
     else
-        return scale * (sqrt(dx*dx + dy*dy) - (*r1() + *r2()));
+        return scale * (std::hypot(dx, dy) - (*r1() + *r2()));
 }
 
 double ConstraintTangentCircumf::grad(double *param)
@@ -1041,7 +1225,7 @@ double ConstraintTangentCircumf::grad(double *param)
         param == r1() || param == r2()) {
         double dx = (*c1x() - *c2x());
         double dy = (*c1y() - *c2y());
-        double d = sqrt(dx*dx + dy*dy);
+        double d = std::hypot(dx, dy); // sqrt(dx*dx + dy*dy);
         if (param == c1x()) deriv += dx/d;
         if (param == c1y()) deriv += dy/d;
         if (param == c2x()) deriv += -dx/d;
@@ -1082,67 +1266,52 @@ void ConstraintPointOnEllipse::rescale(double coef)
     scale = coef * 1;
 }
 
+void ConstraintPointOnEllipse::errorgrad(double* err, double* grad, double* param)
+{
+    if (!err)
+        if (!grad)
+            return;
+        else if (!param) {
+            *grad = 0;
+            return;
+        }
+    DeriVector2 f1 = DeriVector2(Point(f1x(), f1y()), param);
+    DeriVector2 c = DeriVector2(Point(cx(), cy()), param);
+    DeriVector2 f2 = DeriVector2::lerp(f1, c, 2);
+    // compute the invariant of the ellipse - sum of the distances from the minor pole to the two foci
+    // don't just double the distance, we need the eventual derivatives for F2 as well
+    DeriVector2 minorPole = // intersection of minor axis with the ellipse
+        f1.subtr(c).rotate90ccw().getNormalized().multD(*rmin(), param == rmin() ? 1 : 0).sum(c);
+    double dInvarTerm1, dInvarTerm2;
+    double invarTerm1 = minorPole.subtr(f1).length(dInvarTerm1);
+    double invarTerm2 = minorPole.subtr(f2).length(dInvarTerm2);
+    double invariant = invarTerm1 + invarTerm2, dInvariant = dInvarTerm1 + dInvarTerm2;
+
+    // compute the distances from the point to the two foci (focusesci sounds so much better, more redundundant)
+    DeriVector2 p = DeriVector2(Point(p1x(), p1y()), param);
+    double dPointTerm1, dPointTerm2;
+    double point1Dist = p.subtr(f1).length(dPointTerm1);
+    double point2Dist = p.subtr(f2).length(dPointTerm2);
+    if (err) {
+        *err = point1Dist + point2Dist - invariant;
+    }
+    if (grad) {
+        *grad = dPointTerm1 + dPointTerm2 - dInvariant;
+    }
+}
+
 double ConstraintPointOnEllipse::error()
 {
-    double X_0 = *p1x();
-    double Y_0 = *p1y();
-    double X_c = *cx();
-    double Y_c = *cy();
-    double X_F1 = *f1x();
-    double Y_F1 = *f1y();
-    double b = *rmin();
-
-    double err=sqrt(pow(X_0 - X_F1, 2) + pow(Y_0 - Y_F1, 2)) + sqrt(pow(X_0 +
-        X_F1 - 2*X_c, 2) + pow(Y_0 + Y_F1 - 2*Y_c, 2)) - 2*sqrt(pow(b, 2) +
-        pow(X_F1 - X_c, 2) + pow(Y_F1 - Y_c, 2));
-    return scale * err;
+    double error;
+    errorgrad(&error, nullptr, nullptr);
+    return scale * error;
 }
 
 double ConstraintPointOnEllipse::grad(double *param)
 {
-    double deriv=0.;
-    if (param == p1x() || param == p1y() ||
-        param == f1x() || param == f1y() ||
-        param == cx() || param == cy() ||
-        param == rmin()) {
-
-        double X_0 = *p1x();
-        double Y_0 = *p1y();
-        double X_c = *cx();
-        double Y_c = *cy();
-        double X_F1 = *f1x();
-        double Y_F1 = *f1y();
-        double b = *rmin();
-
-        if (param == p1x())
-            deriv += (X_0 - X_F1)/sqrt(pow(X_0 - X_F1, 2) + pow(Y_0 - Y_F1, 2)) +
-                (X_0 + X_F1 - 2*X_c)/sqrt(pow(X_0 + X_F1 - 2*X_c, 2) + pow(Y_0 + Y_F1 -
-                2*Y_c, 2));
-        if (param == p1y())
-            deriv += (Y_0 - Y_F1)/sqrt(pow(X_0 - X_F1, 2) + pow(Y_0 - Y_F1, 2)) +
-                (Y_0 + Y_F1 - 2*Y_c)/sqrt(pow(X_0 + X_F1 - 2*X_c, 2) + pow(Y_0 + Y_F1 -
-                2*Y_c, 2));
-        if (param == f1x())
-            deriv += -(X_0 - X_F1)/sqrt(pow(X_0 - X_F1, 2) + pow(Y_0 - Y_F1, 2)) -
-                2*(X_F1 - X_c)/sqrt(pow(b, 2) + pow(X_F1 - X_c, 2) + pow(Y_F1 - Y_c, 2))
-                + (X_0 + X_F1 - 2*X_c)/sqrt(pow(X_0 + X_F1 - 2*X_c, 2) + pow(Y_0 + Y_F1
-                - 2*Y_c, 2));
-        if (param == f1y())
-            deriv +=-(Y_0 - Y_F1)/sqrt(pow(X_0 - X_F1, 2) + pow(Y_0 - Y_F1, 2)) -
-                2*(Y_F1 - Y_c)/sqrt(pow(b, 2) + pow(X_F1 - X_c, 2) + pow(Y_F1 - Y_c, 2))
-                + (Y_0 + Y_F1 - 2*Y_c)/sqrt(pow(X_0 + X_F1 - 2*X_c, 2) + pow(Y_0 + Y_F1
-                - 2*Y_c, 2));
-        if (param == cx())
-            deriv += 2*(X_F1 - X_c)/sqrt(pow(b, 2) + pow(X_F1 - X_c, 2) + pow(Y_F1
-                - Y_c, 2)) - 2*(X_0 + X_F1 - 2*X_c)/sqrt(pow(X_0 + X_F1 - 2*X_c, 2) +
-                pow(Y_0 + Y_F1 - 2*Y_c, 2));
-        if (param == cy())
-            deriv +=2*(Y_F1 - Y_c)/sqrt(pow(b, 2) + pow(X_F1 - X_c, 2) + pow(Y_F1
-                - Y_c, 2)) - 2*(Y_0 + Y_F1 - 2*Y_c)/sqrt(pow(X_0 + X_F1 - 2*X_c, 2) +
-                pow(Y_0 + Y_F1 - 2*Y_c, 2));
-        if (param == rmin())
-            deriv += -2*b/sqrt(pow(b, 2) + pow(X_F1 - X_c, 2) + pow(Y_F1 - Y_c,
-                2));
+    double deriv=0;
+    if (std::find(pvec.begin(), pvec.end(), param) != pvec.end()) {
+        errorgrad(nullptr, &deriv, param);
     }
     return scale * deriv;
 }
@@ -1299,7 +1468,7 @@ void ConstraintInternalAlignmentPoint2Ellipse::errorgrad(double *err, double *gr
     a = e.getRadMaj(c,f1,b,db,da);
 
     DeriVector2 poa;//point to align to
-    bool by_y_not_by_x = false;//a flag to indicate if the alignment error function is for y (false - x, true - y).
+    bool by_y_not_by_x = false;//a flag to indicate if the alignment err function is for y (false - x, true - y).
 
     switch(AlignmentType){
         case EllipsePositiveMajorX:
@@ -1427,7 +1596,7 @@ void ConstraintInternalAlignmentPoint2Hyperbola::errorgrad(double *err, double *
     a = e.getRadMaj(c,f1,b,db,da);
 
     DeriVector2 poa;//point to align to
-    bool by_y_not_by_x = false;//a flag to indicate if the alignment error function is for y (false - x, true - y).
+    bool by_y_not_by_x = false;//a flag to indicate if the alignment err function is for y (false - x, true - y).
 
     switch(AlignmentType){
         case HyperbolaPositiveMajorX:
@@ -1923,9 +2092,9 @@ void ConstraintPointOnParabola::errorgrad(double *err, double *grad, double *par
     proj = point_to_focus.scalarProd(xdir, &dproj);
 
     if (err)
-	*err = pf - 2*focal - proj;
+        *err = pf - 2*focal - proj;
     if (grad)
-	*grad = dpf - 2*dfocal - dproj;
+        *grad = dpf - 2*dfocal - dproj;
 
 }
 
@@ -1999,12 +2168,19 @@ double ConstraintAngleViaPoint::error()
     //rotate n1 by angle
     DeriVector2 n1r (n1.x*cos(ang) - n1.y*sin(ang), n1.x*sin(ang) + n1.y*cos(ang) );
 
-    //calculate angle between n1r and n2. Since we have rotated the n1, the angle is the error function.
+    //calculate angle between n1r and n2. Since we have rotated the n1, the angle is the err function.
     //for our atan2, y is a dot product (n2) * (n1r rotated ccw by 90 degrees).
     //               x is a dot product (n2) * (n1r)
     double err = atan2(-n2.x*n1r.y+n2.y*n1r.x, n2.x*n1r.x + n2.y*n1r.y);
+#if !(defined ANGLE_TO_SIZE && ANGLE_TO_SIZE)
     //essentially, the function is equivalent to atan2(n2)-(atan2(n1)+angle). The only difference is behavior when normals are zero (the intended result is also zero in this case).
     return scale * err;
+#else
+    double metric = std::max(crv1->getRepresentativeSize(), crv2->getRepresentativeSize());
+    metric *= ANGLE_TO_SIZE_RATIO;
+    return metric * err;
+#endif// !ANGLE_TO_SIZE
+
 }
 
 double ConstraintAngleViaPoint::grad(double *param)
@@ -2017,12 +2193,24 @@ double ConstraintAngleViaPoint::grad(double *param)
 
     if (pvecChangedFlag) ReconstructGeomPointers();
 
-    if (param == angle()) deriv += -1.0;
+    if (param == angle())
+        deriv += -1.0;
+
     DeriVector2 n1 = crv1->CalculateNormal(poa, param);
     DeriVector2 n2 = crv2->CalculateNormal(poa, param);
-    deriv -= ( (-n1.dx)*n1.y / pow(n1.length(),2)  +  n1.dy*n1.x / pow(n1.length(),2) );
-    deriv += ( (-n2.dx)*n2.y / pow(n2.length(),2)  +  n2.dy*n2.x / pow(n2.length(),2) );
+    double n1l2 = n1.sqLength(), n2l2 = n2.sqLength();
+    // deriv -= ( (-n1.dx)*n1.y / pow(n1.length(),2)  +  n1.dy*n1.x / pow(n1.length(),2) );
+    deriv -= (-n1.dx * n1.y + n1.dy * n1.x)/n1l2;
+    // deriv += ((-n2.dx) * n2.y / pow(n2.length(), 2) + n2.dy * n2.x / pow(n2.length(), 2));
+    deriv += (-n2.dx * n2.y + n2.dy * n2.x)/n2l2;
 
+#if (defined ANGLE_TO_SIZE && ANGLE_TO_SIZE)
+    // all of the above are normalized, thus any size-related info is lost. Add it back
+    double metric = std::max(crv1->getRepresentativeSize(), crv2->getRepresentativeSize())
+        * ANGLE_TO_SIZE_RATIO;
+    deriv *= metric;
+    ;
+#endif 
 
 //use numeric for testing
 #if 0
@@ -2095,7 +2283,7 @@ void ConstraintSnell::rescale(double coef)
     scale = coef * 1.;
 }
 
-//error and gradient combined. Values are returned through pointers.
+//err and gradient combined. Values are returned through pointers.
 void ConstraintSnell::errorgrad(double *err, double *grad, double* param)
 {
     if (pvecChangedFlag) ReconstructGeomPointers();

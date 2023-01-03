@@ -27,6 +27,7 @@
 #include "Geo.h"
 
 #include <cassert>
+#include <limits>
 
 namespace GCS{
 
@@ -40,37 +41,27 @@ DeriVector2::DeriVector2(const Point &p, const double *derivparam)
         dy = 1.0;
 }
 
-double DeriVector2::length(double &dlength) const
-{
-    double l = length();
-    if(l==0){
-        dlength = 1.0;
-        return l;
-    } else {
-        dlength = (x*dx + y*dy)/l;
-        return l;
-    }
-}
-
-DeriVector2 DeriVector2::getNormalized() const
-{
-    double l=length();
-    if(l==0.0) {
-        return DeriVector2(0, 0, dx, dy);
-    } else {
-        DeriVector2 rtn;
-        rtn.x = x/l;
-        rtn.y = y/l;
-        //first, simply scale the derivative accordingly.
-        rtn.dx = dx/l;
-        rtn.dy = dy/l;
-        //next, remove the collinear part of dx,dy (make a projection onto a normal)
-        double dsc = rtn.dx*rtn.x + rtn.dy*rtn.y;//scalar product d*v
-        rtn.dx -= dsc*rtn.x;//subtract the projection
-        rtn.dy -= dsc*rtn.y;
-        return rtn;
-    }
-}
+//// bogus justification and suboptimal number of multiplications/divisions
+//// moved inline in the header
+//DeriVector2 DeriVector2::getNormalized() const
+//{
+//    double l=length();
+//    if(l==0.0) {
+//        return DeriVector2(0, 0, dx, dy);
+//    } else {
+//        DeriVector2 rtn;
+//        rtn.x = x/l;
+//        rtn.y = y/l;
+//        //first, simply scale the derivative accordingly.
+//        rtn.dx = dx/l;
+//        rtn.dy = dy/l;
+//        //next, remove the collinear part of dx,dy (make a projection onto a normal)
+//        double dsc = rtn.dx*rtn.x + rtn.dy*rtn.y;//scalar product d*v
+//        rtn.dx -= dsc*rtn.x;//subtract the projection
+//        rtn.dy -= dsc*rtn.y;
+//        return rtn;
+//    }
+//}
 
 double DeriVector2::scalarProd(const DeriVector2 &v2, double *dprd) const
 {
@@ -80,11 +71,23 @@ double DeriVector2::scalarProd(const DeriVector2 &v2, double *dprd) const
     return x*v2.x + y*v2.y;
 }
 
+double DeriVector2::crossProduct(const DeriVector2& v2, double* dprd) const
+{
+    if (dprd) {
+        *dprd = dx * v2.y + x * v2.dy - dy * v2.x - y * v2.dx;
+    }
+    return x * v2.y - y * v2.x;
+}
+
+
 DeriVector2 DeriVector2::divD(double val, double dval) const
 {
-    return DeriVector2(x/val,y/val,
-                       dx/val - x*dval/(val*val),
-                       dy/val - y*dval/(val*val)
+    double _x = x / val, _dx = dx / val;
+    double _y = y / val, _dy = dy / val;
+    double _dval = dval / val;
+    return DeriVector2(_x, _y, // x/val,y/val,
+                       _dx - _dval*_x, // dx/val - x*dval/(val*val),
+                       _dy - _dval*_y // dy/val - y*dval/(val*val)
                        );
 }
 
@@ -156,10 +159,17 @@ DeriVector2 Circle::Value(double u, double du, const double* derivparam) const
     r = *(this->rad);  dr = (derivparam == this->rad) ? 1.0 : 0.0;
     DeriVector2 ex (r,0.0,dr,0.0);
     DeriVector2 ey = ex.rotate90ccw();
-    double si, dsi, co, dco;
-    si = std::sin(u); dsi = du*std::cos(u);
-    co = std::cos(u); dco = du*(-std::sin(u));
-    return cv.sum(ex.multD(co,dco).sum(ey.multD(si,dsi)));
+    //double si, dsi, co, dco;
+    //si = std::sin(u); dsi = du*std::cos(u);
+    //co = std::cos(u); dco = du*(-std::sin(u));
+    double si = std::sin(u), co = std::cos(u);
+    double dsi = du * co, dco = -du * si;
+#if defined(DEBUG) || defined(_DEBUG)
+    DeriVector2 ret = cv.sum(ex.multD(co, dco).sum(ey.multD(si, dsi)));
+    return ret;
+#else
+    return cv.sum(ex.multD(co, dco).sum(ey.multD(si, dsi)));
+#endif
 }
 
 int Circle::PushOwnParams(VEC_pD &pvec)
@@ -303,9 +313,12 @@ DeriVector2 Ellipse::Value(double u, double du, const double* derivparam) const
     // </construct a_vec, b_vec>
 
     // sin, cos with derivatives:
-    double co, dco, si, dsi;
-    co = std::cos(u); dco = -std::sin(u)*du;
-    si = std::sin(u); dsi = std::cos(u)*du;
+    //double co, dco, si, dsi;
+    //co = std::cos(u); dco = -std::sin(u)*du;
+    //si = std::sin(u); dsi = std::cos(u)*du;
+
+    double co = std::cos(u), si = std::sin(u);
+    double dco = - si*du, dsi = co* du;
 
     DeriVector2 ret; //point of ellipse at parameter value of u, in global coordinates
     ret = a_vec.multD(co,dco).sum(b_vec.multD(si,dsi)).sum(c);
@@ -441,9 +454,12 @@ DeriVector2 Hyperbola::Value(double u, double du, const double* derivparam) cons
     // </construct a_vec, b_vec>
 
     // sinh, cosh with derivatives:
-    double co, dco, si, dsi;
-    co = std::cosh(u); dco = std::sinh(u)*du;
-    si = std::sinh(u); dsi = std::cosh(u)*du;
+    //double co, dco, si, dsi;
+    //co = std::cosh(u); dco = std::sinh(u)*du;
+    //si = std::sinh(u); dsi = std::cosh(u)*du;
+    double co = std::cosh(u), si = std::sinh(u);
+    double dco = si * du, dsi = co * du;
+
 
     DeriVector2 ret; //point of hyperbola at parameter value of u, in global coordinates
     ret = a_vec.multD(co,dco).sum(b_vec.multD(si,dsi)).sum(c);
@@ -546,9 +562,7 @@ DeriVector2 Parabola::Value(double u, double du, const double* derivparam) const
 
     DeriVector2 dir = dirx.sum(diry);
 
-    DeriVector2 ret; //point of parabola at parameter value of u, in global coordinates
-
-    ret = c.sum( dir );
+    DeriVector2 ret = c.sum(dir); //point of parabola at parameter value of u, in global coordinates
 
     return ret;
 }
@@ -704,6 +718,24 @@ void BSpline::ReconstructOnNewPvec(VEC_pD &pvec, int &cnt)
     start.y=pvec[cnt]; cnt++;
     end.x=pvec[cnt]; cnt++;
     end.y=pvec[cnt]; cnt++;
+}
+
+double BSpline::getRepresentativeSize() const
+{
+    if (poles.empty())
+        return 1;
+    double xMin = std::numeric_limits<double>::max(), xMax = -xMin;
+    double yMin = xMin, yMax = xMax;
+    for (auto p = poles.begin(); p != poles.end(); ++p) {
+        double s = (*p).x ? *(*p).x : 0;
+        xMin = std::min(xMin, s); xMax = std::max(xMax, s);
+        s = (*p).y ? *(*p).y : 0;
+        yMin = std::min(yMin, s); yMax = std::max(yMax, s);
+    }
+    double ret = std::abs(xMax - xMin) + std::abs(yMax - yMin);
+    if (ret == 0)
+        ret = 1;
+    return ret;
 }
 
 BSpline* BSpline::Copy()
